@@ -92,10 +92,6 @@ function unixToIso(unixSeconds) {
   return new Date(unixSeconds * 1000).toISOString()
 }
 
-function hasActiveAccessStatus(status) {
-  return ['active', 'trialing'].includes(String(status || '').toLowerCase())
-}
-
 function getInviteExpireDate() {
   return Math.floor(Date.now() / 1000) + INVITE_EXPIRE_MINUTES * 60
 }
@@ -113,6 +109,17 @@ function buildCheckoutButton(sessionUrl) {
       ],
     },
   }
+}
+
+function statusCountsAsActive(status) {
+  return ['active', 'trialing'].includes(String(status || '').toLowerCase())
+}
+
+function userHasActiveAccess(subscriber) {
+  if (!subscriber) return false
+  if (Number(subscriber.has_access) === 1) return true
+  if (statusCountsAsActive(subscriber.subscription_status)) return true
+  return false
 }
 
 async function ensureSubscriberExists(telegramUserId, telegramUsername = null, telegramChatId = null) {
@@ -262,18 +269,14 @@ async function discordApi(pathname, options = {}) {
 async function addDiscordVipRole(discordUserId) {
   await discordApi(
     `/guilds/${DISCORD_SERVER_ID}/members/${discordUserId}/roles/${DISCORD_VIP_ROLE_ID}`,
-    {
-      method: 'PUT',
-    }
+    { method: 'PUT' }
   )
 }
 
 async function removeDiscordVipRole(discordUserId) {
   await discordApi(
     `/guilds/${DISCORD_SERVER_ID}/members/${discordUserId}/roles/${DISCORD_VIP_ROLE_ID}`,
-    {
-      method: 'DELETE',
-    }
+    { method: 'DELETE' }
   )
 }
 
@@ -282,7 +285,7 @@ async function syncDiscordRoleForSubscriber(subscriber) {
     return { ok: false, reason: 'no_discord_user_id' }
   }
 
-  if (subscriber.has_access) {
+  if (userHasActiveAccess(subscriber)) {
     await addDiscordVipRole(subscriber.discord_user_id)
     await markDiscordRoleAssigned(subscriber.telegram_user_id, true)
     return { ok: true, action: 'assigned' }
@@ -463,7 +466,7 @@ app.post(
 
         if (session.subscription) {
           const subscription = await stripe.subscriptions.retrieve(session.subscription)
-          const isActive = hasActiveAccessStatus(subscription.status)
+          const isActive = statusCountsAsActive(subscription.status)
 
           await setSubscriberAccess({
             telegramUserId,
@@ -478,11 +481,11 @@ app.post(
           if (isActive) {
             await sendVipInviteLinks(telegramUserId)
 
-            const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
+            const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
 
-            if (subscriber?.discord_user_id) {
+            if (updatedSubscriber?.discord_user_id) {
               try {
-                await syncDiscordRoleForSubscriber(subscriber)
+                await syncDiscordRoleForSubscriber(updatedSubscriber)
                 await bot.sendMessage(
                   Number(telegramUserId),
                   '✅ Your Discord VIP role has been assigned.'
@@ -491,7 +494,7 @@ app.post(
                 console.error('Discord role assignment failed after checkout:', error.message)
                 await bot.sendMessage(
                   Number(telegramUserId),
-                  '⚠️ Your payment worked, but I could not assign your Discord VIP role yet. Make sure the Discord bot is in the server and your Discord ID is correct.'
+                  '⚠️ Your payment worked, but I could not assign your Discord VIP role yet. Make sure the Discord bot is in the server, the bot role is above the VIP role, and your Discord ID is correct.'
                 )
               }
             } else {
@@ -521,16 +524,17 @@ app.post(
           await setSubscriberAccess({
             telegramUserId,
             status: subscription?.status || 'active',
-            hasAccess: hasActiveAccessStatus(subscription?.status || 'active'),
+            hasAccess: statusCountsAsActive(subscription?.status || 'active'),
             currentPeriodEnd: unixToIso(subscription?.current_period_end),
             stripeCustomerId: invoice.customer || null,
             stripeSubscriptionId: invoice.subscription || null,
           })
 
-          const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
-          if (subscriber?.discord_user_id && subscriber?.has_access) {
+          const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+
+          if (updatedSubscriber?.discord_user_id && userHasActiveAccess(updatedSubscriber)) {
             try {
-              await syncDiscordRoleForSubscriber(subscriber)
+              await syncDiscordRoleForSubscriber(updatedSubscriber)
             } catch (error) {
               console.error('Discord role assignment failed on invoice.paid:', error.message)
             }
@@ -554,11 +558,11 @@ app.post(
             stripeSubscriptionId: invoice.subscription || null,
           })
 
-          const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
-          if (subscriber?.discord_user_id) {
+          const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+
+          if (updatedSubscriber?.discord_user_id) {
             try {
-              const updated = await getSubscriberByTelegramUserId(telegramUserId)
-              await syncDiscordRoleForSubscriber(updated)
+              await syncDiscordRoleForSubscriber(updatedSubscriber)
             } catch (error) {
               console.error('Discord role removal failed on invoice.payment_failed:', error.message)
             }
@@ -577,16 +581,17 @@ app.post(
           await setSubscriberAccess({
             telegramUserId,
             status: subscription.status || 'unknown',
-            hasAccess: hasActiveAccessStatus(subscription.status),
+            hasAccess: statusCountsAsActive(subscription.status),
             currentPeriodEnd: unixToIso(subscription.current_period_end),
             stripeCustomerId: subscription.customer || null,
             stripeSubscriptionId: subscription.id || null,
           })
 
-          const updated = await getSubscriberByTelegramUserId(telegramUserId)
-          if (updated?.discord_user_id) {
+          const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+
+          if (updatedSubscriber?.discord_user_id) {
             try {
-              await syncDiscordRoleForSubscriber(updated)
+              await syncDiscordRoleForSubscriber(updatedSubscriber)
             } catch (error) {
               console.error('Discord sync failed on customer.subscription.updated:', error.message)
             }
@@ -611,10 +616,11 @@ app.post(
             stripeSubscriptionId: subscription.id || null,
           })
 
-          const updated = await getSubscriberByTelegramUserId(telegramUserId)
-          if (updated?.discord_user_id) {
+          const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+
+          if (updatedSubscriber?.discord_user_id) {
             try {
-              await syncDiscordRoleForSubscriber(updated)
+              await syncDiscordRoleForSubscriber(updatedSubscriber)
             } catch (error) {
               console.error('Discord sync failed on customer.subscription.deleted:', error.message)
             }
@@ -667,9 +673,9 @@ bot.onText(/\/buy/, async (msg) => {
 
     await ensureSubscriberExists(telegramUserId, telegramUsername, telegramChatId)
 
-    const existing = await getSubscriberByTelegramUserId(telegramUserId)
+    const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
 
-    if (existing?.has_access) {
+    if (userHasActiveAccess(subscriber)) {
       await bot.sendMessage(
         msg.chat.id,
         '✅ You already have an active subscription.\n\nUse /links for fresh Telegram links.\nUse /discord YOUR_DISCORD_ID if you still need Discord VIP.'
@@ -725,7 +731,7 @@ bot.onText(/\/links/, async (msg) => {
     const telegramUserId = String(msg.from?.id)
     const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
 
-    if (!subscriber || !subscriber.has_access) {
+    if (!userHasActiveAccess(subscriber)) {
       await bot.sendMessage(
         msg.chat.id,
         '❌ You do not have an active subscription right now.'
@@ -756,9 +762,9 @@ bot.onText(/\/status/, async (msg) => {
     await bot.sendMessage(
       msg.chat.id,
       `Status: ${subscriber.subscription_status || 'unknown'}\nAccess: ${
-        subscriber.has_access ? 'yes' : 'no'
+        userHasActiveAccess(subscriber) ? 'yes' : 'no'
       }\nDiscord linked: ${subscriber.discord_user_id ? 'yes' : 'no'}\nDiscord role assigned: ${
-        subscriber.discord_role_assigned ? 'yes' : 'no'
+        Number(subscriber.discord_role_assigned) === 1 ? 'yes' : 'no'
       }\nPeriod end: ${subscriber.current_period_end || 'n/a'}`
     )
   } catch (error) {
@@ -788,11 +794,11 @@ bot.onText(/\/discord (.+)/, async (msg, match) => {
 
     await setDiscordUserIdForSubscriber(telegramUserId, discordUserId)
 
-    const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
+    const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
 
-    if (subscriber?.has_access) {
+    if (userHasActiveAccess(updatedSubscriber)) {
       try {
-        await syncDiscordRoleForSubscriber(subscriber)
+        await syncDiscordRoleForSubscriber(updatedSubscriber)
         await bot.sendMessage(
           msg.chat.id,
           '✅ Your Discord ID has been linked and your VIP role has been assigned.'
