@@ -42,6 +42,25 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id, 'Bot is working ✅')
 })
 
+app.get('/set-webhook', async (req, res) => {
+    try {
+      const webhookUrl = `${process.env.DOMAIN}/telegram-webhook`
+  
+      const result = await bot.setWebHook(webhookUrl)
+  
+      console.log('Webhook set to:', webhookUrl)
+  
+      res.json({
+        ok: true,
+        webhookUrl,
+        result,
+      })
+    } catch (error) {
+      console.error('Failed to set webhook:', error)
+      res.status(500).json({ error: error.message })
+    }
+  })
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })
