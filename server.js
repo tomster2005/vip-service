@@ -11,6 +11,7 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const TELEGRAM_WEBHOOK_PATH = '/telegram-webhook'
 const TELEGRAM_TIPS_CHAT_ID = process.env.TELEGRAM_TIPS_CHAT_ID
 const TELEGRAM_VIP_CHAT_ID = process.env.TELEGRAM_VIP_CHAT_ID
+const INVITE_EXPIRE_MINUTES = Number(process.env.INVITE_EXPIRE_MINUTES || 60)
 
 if (!TELEGRAM_BOT_TOKEN) {
   throw new Error('Missing TELEGRAM_BOT_TOKEN in environment variables')
@@ -35,6 +36,7 @@ app.get('/health', (req, res) => {
     webhookPath: TELEGRAM_WEBHOOK_PATH,
     telegramTipsChatIdSet: Boolean(TELEGRAM_TIPS_CHAT_ID),
     telegramVipChatIdSet: Boolean(TELEGRAM_VIP_CHAT_ID),
+    inviteExpireMinutes: INVITE_EXPIRE_MINUTES,
   })
 })
 
@@ -86,12 +88,13 @@ app.post(TELEGRAM_WEBHOOK_PATH, (req, res) => {
   }
 })
 
+function getInviteExpireDate() {
+  return Math.floor(Date.now() / 1000) + INVITE_EXPIRE_MINUTES * 60
+}
+
 bot.onText(/\/start/, async (msg) => {
   try {
-    await bot.sendMessage(
-      msg.chat.id,
-      'Bot is working ✅'
-    )
+    await bot.sendMessage(msg.chat.id, 'Bot is working ✅')
   } catch (error) {
     console.error('/start error:', error)
   }
@@ -107,17 +110,21 @@ bot.onText(/\/testinvite/, async (msg) => {
       return
     }
 
+    const expireDate = getInviteExpireDate()
+
     const tipsInvite = await bot.createChatInviteLink(TELEGRAM_TIPS_CHAT_ID, {
       member_limit: 1,
+      expire_date: expireDate,
     })
 
     const vipInvite = await bot.createChatInviteLink(TELEGRAM_VIP_CHAT_ID, {
       member_limit: 1,
+      expire_date: expireDate,
     })
 
     await bot.sendMessage(
       msg.chat.id,
-      `🎯 Test Invite Links\n\n📈 Tips Chat:\n${tipsInvite.invite_link}\n\n💬 VIP Chat:\n${vipInvite.invite_link}`
+      `🎯 Test Invite Links\n\n📈 Tips Chat:\n${tipsInvite.invite_link}\n\n💬 VIP Chat:\n${vipInvite.invite_link}\n\nThese links expire in ${INVITE_EXPIRE_MINUTES} minutes.`
     )
   } catch (error) {
     console.error('/testinvite error:', error)
