@@ -9,6 +9,8 @@ const PORT = process.env.PORT || 4242
 const DOMAIN = process.env.DOMAIN
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
 const TELEGRAM_WEBHOOK_PATH = '/telegram-webhook'
+const TELEGRAM_TIPS_CHAT_ID = process.env.TELEGRAM_TIPS_CHAT_ID
+const TELEGRAM_VIP_CHAT_ID = process.env.TELEGRAM_VIP_CHAT_ID
 
 if (!TELEGRAM_BOT_TOKEN) {
   throw new Error('Missing TELEGRAM_BOT_TOKEN in environment variables')
@@ -31,6 +33,8 @@ app.get('/health', (req, res) => {
     ok: true,
     domain: DOMAIN,
     webhookPath: TELEGRAM_WEBHOOK_PATH,
+    telegramTipsChatIdSet: Boolean(TELEGRAM_TIPS_CHAT_ID),
+    telegramVipChatIdSet: Boolean(TELEGRAM_VIP_CHAT_ID),
   })
 })
 
@@ -84,44 +88,47 @@ app.post(TELEGRAM_WEBHOOK_PATH, (req, res) => {
 
 bot.onText(/\/start/, async (msg) => {
   try {
-    await bot.sendMessage(msg.chat.id, 'Bot is working ✅')
+    await bot.sendMessage(
+      msg.chat.id,
+      'Bot is working ✅'
+    )
   } catch (error) {
     console.error('/start error:', error)
   }
 })
 
 bot.onText(/\/testinvite/, async (msg) => {
-    try {
-      const userId = msg.from.id
-  
-      const tipsInvite = await bot.createChatInviteLink(
-        process.env.TELEGRAM_TIPS_CHAT_ID,
-        {
-          member_limit: 1,
-        }
-      )
-  
-      const vipInvite = await bot.createChatInviteLink(
-        process.env.TELEGRAM_VIP_CHAT_ID,
-        {
-          member_limit: 1,
-        }
-      )
-  
-      await bot.sendMessage(
-        userId,
-        `🎯 Test Invite Links:\n\n📈 Tips Chat:\n${tipsInvite.invite_link}\n\n💬 VIP Chat:\n${vipInvite.invite_link}`
-      )
-    } catch (error) {
-      console.error('Invite test failed:', error)
-  
+  try {
+    if (!TELEGRAM_TIPS_CHAT_ID || !TELEGRAM_VIP_CHAT_ID) {
       await bot.sendMessage(
         msg.chat.id,
-        '❌ Failed to generate invite links'
+        'Missing TELEGRAM_TIPS_CHAT_ID or TELEGRAM_VIP_CHAT_ID in environment variables.'
       )
+      return
     }
-  })
-  
+
+    const tipsInvite = await bot.createChatInviteLink(TELEGRAM_TIPS_CHAT_ID, {
+      member_limit: 1,
+    })
+
+    const vipInvite = await bot.createChatInviteLink(TELEGRAM_VIP_CHAT_ID, {
+      member_limit: 1,
+    })
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `🎯 Test Invite Links\n\n📈 Tips Chat:\n${tipsInvite.invite_link}\n\n💬 VIP Chat:\n${vipInvite.invite_link}`
+    )
+  } catch (error) {
+    console.error('/testinvite error:', error)
+
+    await bot.sendMessage(
+      msg.chat.id,
+      `❌ Failed to generate invite links.\n\n${error.message}`
+    )
+  }
+})
+
 bot.on('message', (msg) => {
   console.log('Message received:', {
     text: msg.text,
