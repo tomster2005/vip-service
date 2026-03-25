@@ -42,6 +42,7 @@ const stripe = new Stripe(STRIPE_SECRET_KEY)
 
 const dbPath = path.join(__dirname, 'vip-service.db')
 console.log('[DB] Using SQLite file at:', dbPath)
+
 const db = new Database(dbPath)
 
 db.exec(`
@@ -100,14 +101,7 @@ function getInviteExpireDate() {
 function buildCheckoutButton(sessionUrl) {
   return {
     reply_markup: {
-      inline_keyboard: [
-        [
-          {
-            text: 'Subscribe Now',
-            url: sessionUrl,
-          },
-        ],
-      ],
+      inline_keyboard: [[{ text: 'Subscribe Now', url: sessionUrl }]],
     },
   }
 }
@@ -134,7 +128,6 @@ async function ensureSubscriberExists(telegramUserId, telegramUsername = null, t
     telegramUsername,
     telegramChatId: telegramChatId ? String(telegramChatId) : null,
     foundExisting: Boolean(existing),
-    existingSubscriber: existing || null,
   })
 
   if (!existing) {
@@ -166,7 +159,7 @@ async function ensureSubscriberExists(telegramUserId, telegramUsername = null, t
     )
 
     console.log('[ENSURE SUBSCRIBER] inserted new row:', inserted || null)
-    return
+    return inserted
   }
 
   await runQuery(
@@ -191,6 +184,7 @@ async function ensureSubscriberExists(telegramUserId, telegramUsername = null, t
   )
 
   console.log('[ENSURE SUBSCRIBER] updated existing row:', updated || null)
+  return updated
 }
 
 async function getSubscriberByTelegramUserId(telegramUserId) {
@@ -201,13 +195,13 @@ async function getSubscriberByTelegramUserId(telegramUserId) {
 
 async function getSubscriberByStripeSubscriptionId(subscriptionId) {
   return getQuery(`SELECT * FROM subscribers WHERE stripe_subscription_id = ?`, [
-    subscriptionId,
+    String(subscriptionId),
   ])
 }
 
 async function getSubscriberByStripeCustomerId(customerId) {
   return getQuery(`SELECT * FROM subscribers WHERE stripe_customer_id = ?`, [
-    customerId,
+    String(customerId),
   ])
 }
 
@@ -291,63 +285,62 @@ async function setDiscordUserIdForSubscriber(telegramUserId, discordUserId) {
   })
 }
 
-async function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function discordApi(pathname, options = {}, attempt = 1) {
+  const response = await fetch(`https://discord.com/api/v10${pathname}`, {
+    ...options,
+    headers: {
+      Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  })
+
+  if (response.ok) {
+    return true
   }
-  
-  async function discordApi(pathname, options = {}, attempt = 1) {
-    const response = await fetch(`https://discord.com/api/v10${pathname}`, {
-      ...options,
-      headers: {
-        Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
-        'Content-Type': 'application/json',
-        ...(options.headers || {}),
-      },
-    })
-  
-    if (response.ok) {
-      return true
-    }
-  
-    const text = await response.text()
-  
-    console.error('[DISCORD API ERROR]', {
+
+  const text = await response.text()
+
+  console.error('[DISCORD API ERROR]', {
+    attempt,
+    pathname,
+    status: response.status,
+    retryAfter: response.headers.get('retry-after'),
+    bodyPreview: text.slice(0, 500),
+  })
+
+  const looksRateLimited =
+    response.status === 429 ||
+    text.includes('1015') ||
+    text.toLowerCase().includes('rate limit') ||
+    text.toLowerCase().includes('cloudflare')
+
+  if (looksRateLimited && attempt < 2) {
+    const retryAfterHeader = Number(response.headers.get('retry-after'))
+    const rawWaitMs =
+      Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+        ? retryAfterHeader * 1000
+        : 5000
+
+    const waitMs = Math.min(rawWaitMs, 15000)
+
+    console.log('[DISCORD API RETRY]', {
       attempt,
+      waitMs,
       pathname,
-      status: response.status,
-      retryAfter: response.headers.get('retry-after'),
-      bodyPreview: text.slice(0, 500),
     })
-  
-    const looksRateLimited =
-      response.status === 429 ||
-      text.includes('1015') ||
-      text.toLowerCase().includes('rate limit') ||
-      text.toLowerCase().includes('cloudflare')
-  
-    if (looksRateLimited && attempt < 3) {
-        const retryAfterHeader = Number(response.headers.get('retry-after'))
-        const rawWaitMs =
-          Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
-            ? retryAfterHeader * 1000
-            : attempt === 1
-            ? 5000
-            : 15000
-        
-        const waitMs = Math.min(rawWaitMs, 15000)
-  
-      console.log('[DISCORD API RETRY]', {
-        attempt,
-        waitMs,
-        pathname,
-      })
-  
-      await sleep(waitMs)
-      return discordApi(pathname, options, attempt + 1)
-    }
-  
-    throw new Error(`Discord API ${response.status}: ${text.slice(0, 500)}`)
+
+    await sleep(waitMs)
+    return discordApi(pathname, options, attempt + 1)
   }
+
+  throw new Error(`Discord API ${response.status}: ${text.slice(0, 500)}`)
+}
+
 async function addDiscordVipRole(discordUserId) {
   await discordApi(
     `/guilds/${DISCORD_SERVER_ID}/members/${discordUserId}/roles/${DISCORD_VIP_ROLE_ID}`,
@@ -550,6 +543,8 @@ app.post(
           return res.status(200).json({ received: true })
         }
 
+        await ensureSubscriberExists(telegramUserId, null, null)
+
         await setSubscriberAccess({
           telegramUserId,
           status: 'checkout_completed',
@@ -620,8 +615,9 @@ app.post(
         console.log('[STRIPE invoice.paid] resolved telegramUserId:', telegramUserId)
 
         if (telegramUserId) {
-          let subscription = null
+          await ensureSubscriberExists(telegramUserId, null, null)
 
+          let subscription = null
           if (invoice.subscription) {
             subscription = await stripe.subscriptions.retrieve(invoice.subscription)
           }
@@ -658,6 +654,8 @@ app.post(
         console.log('[STRIPE invoice.payment_failed] resolved telegramUserId:', telegramUserId)
 
         if (telegramUserId) {
+          await ensureSubscriberExists(telegramUserId, null, null)
+
           await setSubscriberAccess({
             telegramUserId,
             status: 'past_due',
@@ -689,6 +687,8 @@ app.post(
         console.log('[STRIPE customer.subscription.updated] resolved telegramUserId:', telegramUserId)
 
         if (telegramUserId) {
+          await ensureSubscriberExists(telegramUserId, null, null)
+
           await setSubscriberAccess({
             telegramUserId,
             status: subscription.status || 'unknown',
@@ -721,6 +721,8 @@ app.post(
         console.log('[STRIPE customer.subscription.deleted] resolved telegramUserId:', telegramUserId)
 
         if (telegramUserId) {
+          await ensureSubscriberExists(telegramUserId, null, null)
+
           await setSubscriberAccess({
             telegramUserId,
             status: 'canceled',
@@ -834,7 +836,6 @@ bot.onText(/\/buy/, async (msg) => {
     )
   } catch (error) {
     console.error('/buy error:', error)
-
     await bot.sendMessage(
       msg.chat.id,
       `❌ Failed to create checkout session.\n\n${error.message}`
@@ -975,7 +976,6 @@ bot.onText(/\/testinvite/, async (msg) => {
     await sendVipInviteLinks(String(msg.from?.id))
   } catch (error) {
     console.error('/testinvite error:', error)
-
     await bot.sendMessage(
       msg.chat.id,
       `❌ Failed to generate invite links.\n\n${error.message}`
