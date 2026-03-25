@@ -291,24 +291,61 @@ async function setDiscordUserIdForSubscriber(telegramUserId, discordUserId) {
   })
 }
 
-async function discordApi(pathname, options = {}) {
-  const response = await fetch(`https://discord.com/api/v10${pathname}`, {
-    ...options,
-    headers: {
-      Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  })
-
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`Discord API ${response.status}: ${text}`)
+async function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
   }
-
-  return true
-}
-
+  
+  async function discordApi(pathname, options = {}, attempt = 1) {
+    const response = await fetch(`https://discord.com/api/v10${pathname}`, {
+      ...options,
+      headers: {
+        Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      },
+    })
+  
+    if (response.ok) {
+      return true
+    }
+  
+    const text = await response.text()
+  
+    console.error('[DISCORD API ERROR]', {
+      attempt,
+      pathname,
+      status: response.status,
+      retryAfter: response.headers.get('retry-after'),
+      bodyPreview: text.slice(0, 500),
+    })
+  
+    const looksRateLimited =
+      response.status === 429 ||
+      text.includes('1015') ||
+      text.toLowerCase().includes('rate limit') ||
+      text.toLowerCase().includes('cloudflare')
+  
+    if (looksRateLimited && attempt < 3) {
+      const retryAfterHeader = Number(response.headers.get('retry-after'))
+      const waitMs =
+        Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+          ? retryAfterHeader * 1000
+          : attempt === 1
+          ? 5000
+          : 15000
+  
+      console.log('[DISCORD API RETRY]', {
+        attempt,
+        waitMs,
+        pathname,
+      })
+  
+      await sleep(waitMs)
+      return discordApi(pathname, options, attempt + 1)
+    }
+  
+    throw new Error(`Discord API ${response.status}: ${text.slice(0, 500)}`)
+  }
 async function addDiscordVipRole(discordUserId) {
   await discordApi(
     `/guilds/${DISCORD_SERVER_ID}/members/${discordUserId}/roles/${DISCORD_VIP_ROLE_ID}`,
