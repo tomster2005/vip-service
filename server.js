@@ -41,6 +41,7 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN)
 const stripe = new Stripe(STRIPE_SECRET_KEY)
 
 const dbPath = path.join(__dirname, 'vip-service.db')
+console.log('[DB] Using SQLite file at:', dbPath)
 const db = new Database(dbPath)
 
 db.exec(`
@@ -128,6 +129,14 @@ async function ensureSubscriberExists(telegramUserId, telegramUsername = null, t
     [String(telegramUserId)]
   )
 
+  console.log('[ENSURE SUBSCRIBER] before:', {
+    telegramUserId: String(telegramUserId),
+    telegramUsername,
+    telegramChatId: telegramChatId ? String(telegramChatId) : null,
+    foundExisting: Boolean(existing),
+    existingSubscriber: existing || null,
+  })
+
   if (!existing) {
     await runQuery(
       `
@@ -150,6 +159,13 @@ async function ensureSubscriberExists(telegramUserId, telegramUsername = null, t
         0,
       ]
     )
+
+    const inserted = await getQuery(
+      `SELECT * FROM subscribers WHERE telegram_user_id = ?`,
+      [String(telegramUserId)]
+    )
+
+    console.log('[ENSURE SUBSCRIBER] inserted new row:', inserted || null)
     return
   }
 
@@ -168,6 +184,13 @@ async function ensureSubscriberExists(telegramUserId, telegramUsername = null, t
       String(telegramUserId),
     ]
   )
+
+  const updated = await getQuery(
+    `SELECT * FROM subscribers WHERE telegram_user_id = ?`,
+    [String(telegramUserId)]
+  )
+
+  console.log('[ENSURE SUBSCRIBER] updated existing row:', updated || null)
 }
 
 async function getSubscriberByTelegramUserId(telegramUserId) {
@@ -197,6 +220,16 @@ async function setSubscriberAccess({
   stripeSubscriptionId = null,
   stripeCheckoutSessionId = null,
 }) {
+  console.log('[SET ACCESS] incoming:', {
+    telegramUserId: String(telegramUserId),
+    status,
+    hasAccess,
+    currentPeriodEnd,
+    stripeCustomerId,
+    stripeSubscriptionId,
+    stripeCheckoutSessionId,
+  })
+
   await runQuery(
     `
     UPDATE subscribers
@@ -220,6 +253,9 @@ async function setSubscriberAccess({
       String(telegramUserId),
     ]
   )
+
+  const updated = await getSubscriberByTelegramUserId(telegramUserId)
+  console.log('[SET ACCESS] updated subscriber:', updated || null)
 }
 
 async function markDiscordRoleAssigned(telegramUserId, isAssigned) {
@@ -246,6 +282,13 @@ async function setDiscordUserIdForSubscriber(telegramUserId, discordUserId) {
     `,
     [String(discordUserId), String(telegramUserId)]
   )
+
+  const updated = await getSubscriberByTelegramUserId(telegramUserId)
+  console.log('[DISCORD LINK] saved discord ID:', {
+    telegramUserId: String(telegramUserId),
+    discordUserId: String(discordUserId),
+    updatedSubscriber: updated || null,
+  })
 }
 
 async function discordApi(pathname, options = {}) {
@@ -281,6 +324,8 @@ async function removeDiscordVipRole(discordUserId) {
 }
 
 async function syncDiscordRoleForSubscriber(subscriber) {
+  console.log('[DISCORD SYNC] subscriber input:', subscriber || null)
+
   if (!subscriber?.discord_user_id) {
     return { ok: false, reason: 'no_discord_user_id' }
   }
@@ -320,15 +365,23 @@ async function getTelegramUserIdFromStripeObjects({
   customerId = null,
   subscriptionId = null,
 }) {
+  console.log('[STRIPE LOOKUP] incoming:', {
+    directTelegramUserId,
+    customerId,
+    subscriptionId,
+  })
+
   if (directTelegramUserId) return String(directTelegramUserId)
 
   if (subscriptionId) {
     const bySub = await getSubscriberByStripeSubscriptionId(subscriptionId)
+    console.log('[STRIPE LOOKUP] by subscription:', bySub || null)
     if (bySub?.telegram_user_id) return String(bySub.telegram_user_id)
   }
 
   if (customerId) {
     const byCustomer = await getSubscriberByStripeCustomerId(customerId)
+    console.log('[STRIPE LOOKUP] by customer:', byCustomer || null)
     if (byCustomer?.telegram_user_id) return String(byCustomer.telegram_user_id)
   }
 
@@ -354,6 +407,7 @@ app.get('/health', async (req, res) => {
       discordServerIdSet: Boolean(DISCORD_SERVER_ID),
       discordVipRoleIdSet: Boolean(DISCORD_VIP_ROLE_ID),
       subscribersCount: countRow?.count || 0,
+      dbPath,
     })
   } catch (error) {
     res.status(500).json({
@@ -450,6 +504,8 @@ app.post(
           subscriptionId: session.subscription || null,
         })
 
+        console.log('[STRIPE checkout.session.completed] resolved telegramUserId:', telegramUserId)
+
         if (!telegramUserId) {
           console.error('No telegramUserId found in Stripe session')
           return res.status(200).json({ received: true })
@@ -468,6 +524,13 @@ app.post(
           const subscription = await stripe.subscriptions.retrieve(session.subscription)
           const isActive = statusCountsAsActive(subscription.status)
 
+          console.log('[STRIPE checkout.session.completed] subscription details:', {
+            subscriptionId: subscription.id,
+            status: subscription.status,
+            isActive,
+            currentPeriodEnd: subscription.current_period_end,
+          })
+
           await setSubscriberAccess({
             telegramUserId,
             status: subscription.status || 'active',
@@ -482,6 +545,7 @@ app.post(
             await sendVipInviteLinks(telegramUserId)
 
             const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+            console.log('[STRIPE checkout.session.completed] updated subscriber before Discord sync:', updatedSubscriber || null)
 
             if (updatedSubscriber?.discord_user_id) {
               try {
@@ -514,6 +578,8 @@ app.post(
           subscriptionId: invoice.subscription || null,
         })
 
+        console.log('[STRIPE invoice.paid] resolved telegramUserId:', telegramUserId)
+
         if (telegramUserId) {
           let subscription = null
 
@@ -531,6 +597,7 @@ app.post(
           })
 
           const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+          console.log('[STRIPE invoice.paid] updated subscriber:', updatedSubscriber || null)
 
           if (updatedSubscriber?.discord_user_id && userHasActiveAccess(updatedSubscriber)) {
             try {
@@ -549,6 +616,8 @@ app.post(
           subscriptionId: invoice.subscription || null,
         })
 
+        console.log('[STRIPE invoice.payment_failed] resolved telegramUserId:', telegramUserId)
+
         if (telegramUserId) {
           await setSubscriberAccess({
             telegramUserId,
@@ -559,6 +628,7 @@ app.post(
           })
 
           const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+          console.log('[STRIPE invoice.payment_failed] updated subscriber:', updatedSubscriber || null)
 
           if (updatedSubscriber?.discord_user_id) {
             try {
@@ -577,6 +647,8 @@ app.post(
           subscriptionId: subscription.id || null,
         })
 
+        console.log('[STRIPE customer.subscription.updated] resolved telegramUserId:', telegramUserId)
+
         if (telegramUserId) {
           await setSubscriberAccess({
             telegramUserId,
@@ -588,6 +660,7 @@ app.post(
           })
 
           const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+          console.log('[STRIPE customer.subscription.updated] updated subscriber:', updatedSubscriber || null)
 
           if (updatedSubscriber?.discord_user_id) {
             try {
@@ -606,6 +679,8 @@ app.post(
           subscriptionId: subscription.id || null,
         })
 
+        console.log('[STRIPE customer.subscription.deleted] resolved telegramUserId:', telegramUserId)
+
         if (telegramUserId) {
           await setSubscriberAccess({
             telegramUserId,
@@ -617,6 +692,7 @@ app.post(
           })
 
           const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+          console.log('[STRIPE customer.subscription.deleted] updated subscriber:', updatedSubscriber || null)
 
           if (updatedSubscriber?.discord_user_id) {
             try {
@@ -674,6 +750,7 @@ bot.onText(/\/buy/, async (msg) => {
     await ensureSubscriberExists(telegramUserId, telegramUsername, telegramChatId)
 
     const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
+    console.log('[BUY DEBUG] subscriber before checkout:', subscriber || null)
 
     if (userHasActiveAccess(subscriber)) {
       await bot.sendMessage(
@@ -731,6 +808,8 @@ bot.onText(/\/links/, async (msg) => {
     const telegramUserId = String(msg.from?.id)
     const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
 
+    console.log('[LINKS DEBUG] subscriber:', subscriber || null)
+
     if (!userHasActiveAccess(subscriber)) {
       await bot.sendMessage(
         msg.chat.id,
@@ -752,7 +831,21 @@ bot.onText(/\/links/, async (msg) => {
 bot.onText(/\/status/, async (msg) => {
   try {
     const telegramUserId = String(msg.from?.id)
+
+    console.log('[STATUS DEBUG] querying for user:', telegramUserId)
+
+    await ensureSubscriberExists(
+      telegramUserId,
+      msg.from?.username || null,
+      msg.chat?.id
+    )
+
     const subscriber = await getSubscriberByTelegramUserId(telegramUserId)
+
+    console.log('[STATUS DEBUG] lookup result:', {
+      telegram_user_id: telegramUserId,
+      subscriber: subscriber || null,
+    })
 
     if (!subscriber) {
       await bot.sendMessage(msg.chat.id, 'No subscription record found yet.')
@@ -792,9 +885,20 @@ bot.onText(/\/discord (.+)/, async (msg, match) => {
       msg.chat?.id
     )
 
+    const beforeSave = await getSubscriberByTelegramUserId(telegramUserId)
+    console.log('[DISCORD DEBUG] before saving discord id:', {
+      telegram_user_id: telegramUserId,
+      subscriber: beforeSave || null,
+    })
+
     await setDiscordUserIdForSubscriber(telegramUserId, discordUserId)
 
     const updatedSubscriber = await getSubscriberByTelegramUserId(telegramUserId)
+
+    console.log('[DISCORD DEBUG] lookup result:', {
+      telegram_user_id: telegramUserId,
+      subscriber: updatedSubscriber || null,
+    })
 
     if (userHasActiveAccess(updatedSubscriber)) {
       try {
