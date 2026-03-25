@@ -8,6 +8,9 @@ const path = require('path')
 
 const app = express()
 
+const APP_VERSION = 'discord-retry-v2'
+console.log('[APP VERSION]', APP_VERSION)
+
 const PORT = process.env.PORT || 4242
 const DOMAIN = process.env.DOMAIN
 
@@ -994,5 +997,6 @@ bot.on('message', (msg) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-})
+    console.log(`[APP VERSION] ${APP_VERSION}`)
+    console.log(`Server running on port ${PORT}`)
+  })
