@@ -326,13 +326,15 @@ async function sleep(ms) {
       text.toLowerCase().includes('cloudflare')
   
     if (looksRateLimited && attempt < 3) {
-      const retryAfterHeader = Number(response.headers.get('retry-after'))
-      const waitMs =
-        Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
-          ? retryAfterHeader * 1000
-          : attempt === 1
-          ? 5000
-          : 15000
+        const retryAfterHeader = Number(response.headers.get('retry-after'))
+        const rawWaitMs =
+          Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+            ? retryAfterHeader * 1000
+            : attempt === 1
+            ? 5000
+            : 15000
+        
+        const waitMs = Math.min(rawWaitMs, 15000)
   
       console.log('[DISCORD API RETRY]', {
         attempt,
