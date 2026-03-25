@@ -90,6 +90,38 @@ bot.onText(/\/start/, async (msg) => {
   }
 })
 
+bot.onText(/\/testinvite/, async (msg) => {
+    try {
+      const userId = msg.from.id
+  
+      const tipsInvite = await bot.createChatInviteLink(
+        process.env.TELEGRAM_TIPS_CHAT_ID,
+        {
+          member_limit: 1,
+        }
+      )
+  
+      const vipInvite = await bot.createChatInviteLink(
+        process.env.TELEGRAM_VIP_CHAT_ID,
+        {
+          member_limit: 1,
+        }
+      )
+  
+      await bot.sendMessage(
+        userId,
+        `🎯 Test Invite Links:\n\n📈 Tips Chat:\n${tipsInvite.invite_link}\n\n💬 VIP Chat:\n${vipInvite.invite_link}`
+      )
+    } catch (error) {
+      console.error('Invite test failed:', error)
+  
+      await bot.sendMessage(
+        msg.chat.id,
+        '❌ Failed to generate invite links'
+      )
+    }
+  })
+  
 bot.on('message', (msg) => {
   console.log('Message received:', {
     text: msg.text,
